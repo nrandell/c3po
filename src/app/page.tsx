@@ -1,16 +1,64 @@
 "use client";
-import { FormEvent, useCallback, useId, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { getC3POResponse } from "./openai";
+import { createAudioStream } from "./voice";
 
 interface IState {
   status: "waiting" | "processing" | "answered" | "errored";
   error?: string;
   answer?: string;
+  audio?: Buffer;
+}
+
+async function processAudio(audio: Buffer) {
+  console.log("audio");
+  try {
+    const audioContext = new window.AudioContext();
+    const source = audioContext.createBufferSource();
+    const blob = new Blob([audio]);
+    const audioBuffer = await blob.arrayBuffer();
+    const decoded = await audioContext.decodeAudioData(audioBuffer);
+    source.buffer = decoded;
+    source.connect(audioContext.destination);
+    source.start();
+  } catch (error) {
+    console.error("Oops", error);
+  }
+}
+
+async function processQuestion(
+  question: string,
+  setState: (state: IState) => void
+) {
+  setState({ status: "processing" });
+  try {
+    const answer = await getC3POResponse(question);
+    if (!answer) {
+      setState({ status: "errored", error: "No response" });
+      return;
+    }
+    setState({ status: "answered", answer });
+
+    const audioString = await createAudioStream(answer);
+    const audio = Buffer.from(audioString, "base64");
+
+    setState({ status: "answered", answer, audio });
+  } catch (error) {
+    setState({ status: "errored", error: `${error}` });
+  }
 }
 
 export default function Home() {
   const questionId = useId();
   const [state, setState] = useState<IState>({ status: "waiting" });
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const handleSubmit = useCallback((e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -18,19 +66,19 @@ export default function Home() {
     const formData = new FormData(form);
     const question = formData.get("question")?.valueOf() as string;
     console.log(question);
-    setState({ status: "processing" });
-    getC3POResponse(question)
-      .then((answer) => {
-        if (answer) {
-          setState({ status: "answered", answer });
-        } else {
-          setState({ status: "errored", error: "No response" });
-        }
-      })
-      .catch((e) => {
-        setState({ status: "errored", error: `${e}` });
-      });
+    void processQuestion(question, setState);
   }, []);
+
+  const audio = state.audio;
+  useEffect(() => {
+    const audioElement = audioRef.current;
+
+    if (!audio || !audioElement) return;
+    void processAudio(audio);
+
+    return () => {};
+  }, [audio]);
+
   return (
     <main className="font-mono grid mx-8 grid-cols-4 lg:grid-cols-12 gap-4 min-h-screen my-4 auto-rows-min">
       <form
@@ -72,6 +120,7 @@ export default function Home() {
           {state.error}
         </p>
       )}
+      <audio ref={audioRef} />
     </main>
   );
 }
